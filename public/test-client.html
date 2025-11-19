@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.io Test Client</title>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        input, button {
+            padding: 10px;
+            margin: 5px;
+            width: 200px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #messages {
+            border: 1px solid #ddd;
+            height: 300px;
+            overflow-y: auto;
+            padding: 10px;
+            margin: 10px 0;
+            background-color: #f9f9f9;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            background-color: white;
+            border-left: 3px solid #4CAF50;
+        }
+        .error {
+            border-left-color: #f44336;
+            color: #f44336;
+        }
+        .info {
+            border-left-color: #2196F3;
+            color: #2196F3;
+        }
+        .message-status {
+            font-size: 12px;
+            margin-top: 3px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .status-dot.online {
+            background-color: #4CAF50;
+        }
+        .status-dot.offline {
+            background-color: #f44336;
+        }
+        .message-content {
+            margin-bottom: 3px;
+        }
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4CAF50;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .loading {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #authStatus {
+            margin-top: 10px;
+            padding: 10px;
+            min-height: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Socket.io Test Client</h1>
+        
+        <div>
+            <h3>Authentication</h3>
+            <input type="text" id="username" placeholder="Username">
+            <input type="password" id="password" placeholder="Password">
+            <button id="registerBtn" onclick="register()">Register</button>
+            <button id="loginBtn" onclick="login()">Login</button>
+            <div id="authStatus"></div>
+        </div>
+
+        <div id="chatSection" style="display: none;">
+            <h3>Chat</h3>
+            <div>
+                <strong>Your User ID:</strong> <span id="currentUserId"></span>
+            </div>
+            <input type="text" id="receiverId" placeholder="Receiver User ID">
+            <input type="text" id="messageInput" placeholder="Type your message">
+            <button onclick="sendMessage()">Send Message</button>
+            
+            <h4>Messages:</h4>
+            <div id="messages"></div>
+            
+            <h4>Online Users:</h4>
+            <div id="onlineUsers"></div>
+            
+            <h4>Offline Users:</h4>
+            <div id="offlineUsers"></div>
+        </div>
+    </div>
+
+    <script>
+        let socket = null;
+        let token = null;
+        let currentUserId = null;
+        let currentUsername = null;
+        let onlineUsers = new Set();
+        let userMap = new Map(); // userId -> username mapping
+        let allKnownUsers = new Set(); // All users we've seen (from messages)
+        const serverUrl = 'http://localhost:3000';
+
+        function addMessage(message, type = 'message', userId = null, username = null) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            
+            // Store userId in data attribute for later updates
+            if (userId) {
+                messageDiv.setAttribute('data-user-id', String(userId));
+            }
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            messageDiv.appendChild(contentDiv);
+            
+            // Add status indicator if userId is provided
+            if (userId && username) {
+                const statusDiv = document.createElement('div');
+                statusDiv.className = 'message-status';
+                const userIdStr = String(userId);
+                const isOnline = onlineUsers.has(userIdStr);
+                const statusDot = document.createElement('span');
+                statusDot.className = `status-dot ${isOnline ? 'online' : 'offline'}`;
+                const statusText = document.createElement('span');
+                statusText.textContent = `${username} is ${isOnline ? 'online' : 'offline'}`;
+                statusDiv.appendChild(statusDot);
+                statusDiv.appendChild(statusText);
+                messageDiv.appendChild(statusDiv);
+            }
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function updateOnlineUsersList() {
+            const onlineUsersDiv = document.getElementById('onlineUsers');
+            const offlineUsersDiv = document.getElementById('offlineUsers');
+            
+            // Get online users with usernames
+            const onlineUsersList = Array.from(onlineUsers).map(userId => {
+                const username = userMap.get(userId) || `User ${userId}`;
+                return username;
+            });
+            
+            if (onlineUsersList.length > 0) {
+                onlineUsersDiv.textContent = onlineUsersList.join(', ');
+            } else {
+                onlineUsersDiv.textContent = 'No users online';
+            }
+            
+            // Get offline users (all known users minus online users and current user)
+            const offlineUsersList = Array.from(allKnownUsers)
+                .filter(userId => !onlineUsers.has(userId) && userId !== String(currentUserId))
+                .map(userId => {
+                    const username = userMap.get(userId) || `User ${userId}`;
+                    return username;
+                });
+            
+            if (offlineUsersList.length > 0) {
+                offlineUsersDiv.textContent = offlineUsersList.join(', ');
+            } else {
+                offlineUsersDiv.textContent = 'No offline users';
+            }
+        }
+        
+        function addUserMapping(userId, username) {
+            const userIdStr = String(userId);
+            if (username) {
+                userMap.set(userIdStr, username);
+                allKnownUsers.add(userIdStr);
+            }
+        }
+        
+        function updateMessageStatuses() {
+            const messagesDiv = document.getElementById('messages');
+            const messageDivs = messagesDiv.querySelectorAll('.message');
+            messageDivs.forEach(messageDiv => {
+                const statusDiv = messageDiv.querySelector('.message-status');
+                if (statusDiv) {
+                    const statusText = statusDiv.querySelector('span:last-child');
+                    const statusDot = statusDiv.querySelector('.status-dot');
+                    if (statusText && statusDot) {
+                        const text = statusText.textContent;
+                        const username = text.split(' is ')[0];
+                        const currentStatus = text.split(' is ')[1];
+                        
+                        // Find userId from the message content or stored data
+                        // We'll need to store userId in data attribute
+                        const storedUserId = messageDiv.getAttribute('data-user-id');
+                        if (storedUserId) {
+                            const userIdStr = String(storedUserId);
+                            const isOnline = onlineUsers.has(userIdStr);
+                            statusDot.className = `status-dot ${isOnline ? 'online' : 'offline'}`;
+                            statusText.textContent = `${username} is ${isOnline ? 'online' : 'offline'}`;
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateAuthStatus(message, isSuccess, isLoading = false) {
+            const statusDiv = document.getElementById('authStatus');
+            if (isLoading) {
+                statusDiv.innerHTML = message + '<span class="loader"></span>';
+                statusDiv.style.color = '#2196F3';
+            } else {
+                statusDiv.innerHTML = message;
+                statusDiv.style.color = isSuccess ? 'green' : 'red';
+            }
+        }
+
+        function setLoading(isLoading) {
+            const registerBtn = document.getElementById('registerBtn');
+            const loginBtn = document.getElementById('loginBtn');
+            const usernameInput = document.getElementById('username');
+            const passwordInput = document.getElementById('password');
+            
+            registerBtn.disabled = isLoading;
+            loginBtn.disabled = isLoading;
+            usernameInput.disabled = isLoading;
+            passwordInput.disabled = isLoading;
+            
+            if (isLoading) {
+                registerBtn.classList.add('loading');
+                loginBtn.classList.add('loading');
+            } else {
+                registerBtn.classList.remove('loading');
+                loginBtn.classList.remove('loading');
+            }
+        }
+
+        async function register() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                updateAuthStatus('Please enter username and password', false);
+                return;
+            }
+
+            setLoading(true);
+            updateAuthStatus('Registering...', false, true);
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+                const response = await fetch(`${serverUrl}/api/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password }),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ error: 'Registration failed' }));
+                    updateAuthStatus(errorData.error || `Registration failed (${response.status})`, false);
+                    setLoading(false);
+                    return;
+                }
+
+                const data = await response.json();
+                token = data.token;
+                currentUserId = data.user.id;
+                currentUsername = data.user.username;
+                addUserMapping(data.user.id, data.user.username);
+                updateAuthStatus('Registered successfully! User ID: ' + data.user.id, true);
+                document.getElementById('currentUserId').textContent = data.user.id;
+                setLoading(false);
+                connectSocket();
+            } catch (error) {
+                setLoading(false);
+                if (error.name === 'AbortError') {
+                    updateAuthStatus('Request timeout. Please check if server is running.', false);
+                } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    updateAuthStatus('Network error. Please check if server is running on ' + serverUrl, false);
+                } else {
+                    updateAuthStatus('Error: ' + error.message, false);
+                }
+                console.error('Registration error:', error);
+            }
+        }
+
+        async function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                updateAuthStatus('Please enter username and password', false);
+                return;
+            }
+
+            setLoading(true);
+            updateAuthStatus('Logging in...', false, true);
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+                const response = await fetch(`${serverUrl}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password }),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ error: 'Login failed' }));
+                    updateAuthStatus(errorData.error || `Login failed (${response.status})`, false);
+                    setLoading(false);
+                    return;
+                }
+
+                const data = await response.json();
+                token = data.token;
+                currentUserId = data.user.id;
+                currentUsername = data.user.username;
+                addUserMapping(data.user.id, data.user.username);
+                updateAuthStatus('Logged in successfully! User ID: ' + data.user.id, true);
+                document.getElementById('currentUserId').textContent = data.user.id;
+                setLoading(false);
+                connectSocket();
+            } catch (error) {
+                setLoading(false);
+                if (error.name === 'AbortError') {
+                    updateAuthStatus('Request timeout. Please check if server is running.', false);
+                } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    updateAuthStatus('Network error. Please check if server is running on ' + serverUrl, false);
+                } else {
+                    updateAuthStatus('Error: ' + error.message, false);
+                }
+                console.error('Login error:', error);
+            }
+        }
+
+        function connectSocket() {
+            if (socket) {
+                socket.disconnect();
+            }
+
+            socket = io(serverUrl, {
+                auth: {
+                    token: token
+                }
+            });
+
+            socket.on('connect', () => {
+                addMessage('Connected to server', 'info');
+                document.getElementById('chatSection').style.display = 'block';
+                // Add current user to online users
+                if (currentUserId) {
+                    onlineUsers.add(String(currentUserId));
+                    updateOnlineUsersList();
+                }
+            });
+
+            socket.on('disconnect', () => {
+                addMessage('Disconnected from server', 'info');
+            });
+
+            socket.on('receive_message', (data) => {
+                const msg = data.message;
+                const senderId = typeof msg.sender === 'object' ? String(msg.sender._id || msg.sender.id) : String(msg.sender);
+                const senderUsername = typeof msg.sender === 'object' ? msg.sender.username : 'Unknown';
+                addUserMapping(senderId, senderUsername);
+                addMessage(`From ${senderUsername}: ${msg.content}`, 'message', senderId, senderUsername);
+                updateOnlineUsersList();
+            });
+
+            socket.on('message_sent', (data) => {
+                const msg = data.message;
+                const receiverId = typeof msg.receiver === 'object' ? String(msg.receiver._id || msg.receiver.id) : String(msg.receiver);
+                const receiverUsername = typeof msg.receiver === 'object' ? msg.receiver.username : 'Unknown';
+                addUserMapping(receiverId, receiverUsername);
+                addMessage(`To ${receiverUsername}: ${msg.content}`, 'message', receiverId, receiverUsername);
+                updateOnlineUsersList();
+            });
+
+            socket.on('user_status_change', (data) => {
+                const userId = String(data.userId);
+                addUserMapping(userId, data.username);
+                if (data.status === 'online') {
+                    onlineUsers.add(userId);
+                } else {
+                    onlineUsers.delete(userId);
+                }
+                updateOnlineUsersList();
+                addMessage(`${data.username} is now ${data.status}`, 'info');
+                // Update all message statuses when user status changes
+                updateMessageStatuses();
+            });
+
+            socket.on('online_users', (users) => {
+                // Handle both old format (array of IDs) and new format (array of objects)
+                if (users && users.length > 0) {
+                    if (typeof users[0] === 'string' || typeof users[0] === 'object' && !users[0].userId) {
+                        // Old format: array of IDs
+                        onlineUsers = new Set(users.map(id => String(id)));
+                    } else {
+                        // New format: array of objects with userId and username
+                        onlineUsers = new Set(users.map(user => String(user.userId || user._id)));
+                        users.forEach(user => {
+                            if (user.userId && user.username) {
+                                addUserMapping(user.userId, user.username);
+                            }
+                        });
+                    }
+                } else {
+                    onlineUsers = new Set();
+                }
+                // Add current user to online users if not already there
+                if (currentUserId) {
+                    onlineUsers.add(String(currentUserId));
+                }
+                updateOnlineUsersList();
+            });
+
+            socket.on('user_typing', (data) => {
+                addMessage(`${data.username} is typing...`, 'info');
+            });
+
+            socket.on('error', (error) => {
+                addMessage(`Error: ${error.message}`, 'error');
+            });
+        }
+
+        function sendMessage() {
+            const receiverId = document.getElementById('receiverId').value;
+            const content = document.getElementById('messageInput').value;
+
+            if (!socket || !receiverId || !content) {
+                addMessage('Please provide receiver ID and message', 'error');
+                return;
+            }
+
+            socket.emit('send_message', {
+                receiverId: receiverId,
+                content: content
+            });
+
+            document.getElementById('messageInput').value = '';
+        }
+
+        // Allow Enter key to send message
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
+
